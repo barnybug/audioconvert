@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,14 +13,13 @@ import (
 	"time"
 
 	log "github.com/charmbracelet/log"
-	"github.com/github/go-pipe/pipe"
 	"github.com/urfave/cli/v2"
 )
 
 const poolSize = 8
 
-func cleanupTmpdir(tmpdir string) {
-	log.Info("🗑 Cleaning up...")
+func cleanupTmpdir(tmpdir string, msg string) {
+	log.Infof("🗑 Cleaning up %s...", msg)
 	rm_args := []string{"-rf", tmpdir}
 	rm := exec.Command("rm", rm_args...)
 	_, err := rm.CombinedOutput()
@@ -43,14 +41,14 @@ func main() {
 	app := &cli.App{
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:  "ffmpeg-options",
+				Name:  "transcoder-command",
 				Value: "",
-				Usage: "options to pass to ffmpeg",
+				Usage: "transcoder command",
 			},
 			&cli.StringFlag{
-				Name:  "fdkaac-options",
-				Value: "-I -p 2 -m 5 -G 0",
-				Usage: "options to pass to fdkaac",
+				Name:  "transcoder-preset",
+				Value: "",
+				Usage: "transcoder preset command",
 			},
 			&cli.StringFlag{
 				Name:  "log-level",
@@ -145,7 +143,7 @@ func process_zip(ctx *cli.Context, filename string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer cleanupTmpdir(tmpdir)
+	defer cleanupTmpdir(tmpdir, "temporary directory")
 
 	outputdir := output_directory(ctx)
 
@@ -155,6 +153,9 @@ func process_zip(ctx *cli.Context, filename string) {
 	unzip := exec.Command("unzip", unzip_args...)
 	unzip_out, err := unzip.CombinedOutput()
 	if err != nil {
+		if exiterr, ok := err.(*exec.ExitError); ok {
+			log.Error("Unzip failed", "error", exiterr, "output", string(unzip_out))
+		}
 		log.Fatal(err)
 	}
 	log.Debug(string(unzip_out))
@@ -192,14 +193,14 @@ func process_zip(ctx *cli.Context, filename string) {
 
 func run(ctx *cli.Context, files []string, outputdir string) {
 	metadata := get_metadata(files[0])
-	log.Info("ℹ️ Metadata", "artist", metadata.Format.Tags.Artist, "album", metadata.Format.Tags.Album)
+	log.Info("ℹ️ Metadata", "artist", metadata.Format.Tags.AlbumArtist, "album", metadata.Format.Tags.Album)
 	log.Info("📀 Transcoding", "count", len(files))
 	batch_convert(ctx, files, outputdir)
 
 	var destpath = ctx.String("rsync")
 	if destpath != "" {
-		// rsync tmpdir over to nova
-		dest := fmt.Sprintf("%s/%s/%s", destpath, filesafe(metadata.Format.Tags.Artist), filesafe(metadata.Format.Tags.Album))
+		// rsync tmpdir over to destination
+		dest := fmt.Sprintf("%s/%s/%s", destpath, filesafe(metadata.Format.Tags.AlbumArtist), filesafe(metadata.Format.Tags.Album))
 		log.Info("📤 Uploading", "destination", dest)
 		rsync_args := []string{"-rv", "--mkpath", outputdir + "/", dest + "/"}
 		rsync := exec.Command("rsync", rsync_args...)
@@ -210,10 +211,43 @@ func run(ctx *cli.Context, files []string, outputdir string) {
 		}
 		log.Debug(string(rsync_out))
 		// remove outputs
-		cleanupTmpdir(outputdir)
+		cleanupTmpdir(outputdir, "output directory")
 	} else {
 		log.Info("Output files:", "path", outputdir)
 	}
+}
+
+var transcoder_presets = map[string]string{
+	"aac":       "ffmpeg -hide_banner -i \"$input\" -c:a aac -b:a 256k -movflags +faststart \"$output\"",
+	"aac-low":   "ffmpeg -hide_banner -i \"$input\" -c:a aac -b:a 96k -movflags +faststart \"$output\"",
+	"aac-high":  "ffmpeg -hide_banner -i \"$input\" -c:a aac -b:a 320k -movflags +faststart \"$output\"",
+	"opus":      "ffmpeg -nostdin -hide_banner -i \"$input\" -vn -c:a libopus -b:a 160k \"$output\"",
+	"opus-low":  "ffmpeg -hide_banner -i \"$input\" -vn -c:a libopus -b:a 96k \"$output\"",
+	"opus-high": "ffmpeg -hide_banner -i \"$input\" -vn -c:a libopus -b:a 320k \"$output\"",
+	"flac":      "ffmpeg -hide_banner -i \"$input\" -c:a flac -compression_level 12 \"$output\"",
+	"mp3":       "ffmpeg -hide_banner -i \"$input\" -c:a libmp3lame -q:a 2 \"$output\"",
+	"mp3-low":   "ffmpeg -hide_banner -i \"$input\" -c:a libmp3lame -q:a 5 \"$output\"",
+	"mp3-high":  "ffmpeg -hide_banner -i \"$input\" -c:a libmp3lame -q:a 0 \"$output\"",
+	"wav":       "ffmpeg -hide_banner -i \"$input\" -c:a pcm_s24le \"$output\"",
+	"alac":      "ffmpeg -hide_banner -i \"$input\" -c:a alac \"$output\"",
+	"ogg":       "ffmpeg -hide_banner -i \"$input\" -c:a libvorbis -q:a 5 \"$output\"",
+	"ogg-low":   "ffmpeg -hide_banner -i \"$input\" -c:a libvorbis -q:a 1 \"$output\"",
+	"ogg-high":  "ffmpeg -hide_banner -i \"$input\" -c:a libvorbis -q:a 10 \"$output\"",
+}
+
+func get_transcoder(ctx *cli.Context) (string, string) {
+	transcoder := ctx.String("transcoder-command")
+	if transcoder == "" {
+		preset := ctx.String("transcoder-preset")
+		if preset == "" {
+			log.Fatal("No transcoder preset specified")
+		}
+		if _, ok := transcoder_presets[preset]; !ok {
+			log.Fatal("Unknown transcoder preset", "preset", preset)
+		}
+		transcoder = transcoder_presets[preset]
+	}
+	return transcoder, "opus"
 }
 
 func batch_convert(ctx *cli.Context, files []string, tmpdir string) []string {
@@ -222,6 +256,8 @@ func batch_convert(ctx *cli.Context, files []string, tmpdir string) []string {
 	var wg sync.WaitGroup
 	var outputs []string
 	wg.Add(poolSize)
+	transcoder, extension := get_transcoder(ctx)
+
 	for i := 0; i < poolSize; i++ {
 		go func() {
 			for filename := range work_queue {
@@ -231,8 +267,8 @@ func batch_convert(ctx *cli.Context, files []string, tmpdir string) []string {
 				if len(track) == 1 {
 					track = "0" + track
 				}
-				output := fmt.Sprintf("%s/%s - %s.m4a", tmpdir, track, filesafe(metadata.Format.Tags.Title))
-				convert(ctx, filename, output)
+				output := fmt.Sprintf("%s/%s - %s.%s", tmpdir, track, filesafe(metadata.Format.Tags.Title), extension)
+				convert(ctx, transcoder, filename, output)
 				outputs = append(outputs, output)
 				// get size of file
 				stat, err := os.Stat(output)
@@ -261,10 +297,11 @@ type Metadata struct {
 		Filename  string `json:"filename"`
 		NbStreams int    `json:"nb_streams"`
 		Tags      struct {
-			Album  string `json:"album"`
-			Artist string `json:"artist"`
-			Title  string `json:"title"`
-			Track  string `json:"track"`
+			Album       string `json:"album"`
+			AlbumArtist string `json:"album_artist"`
+			Artist      string `json:"artist"`
+			Title       string `json:"title"`
+			Track       string `json:"track"`
 		}
 	}
 }
@@ -287,37 +324,14 @@ func get_metadata(filename string) Metadata {
 	return metadata
 }
 
-func convert(ctx *cli.Context, filename string, output string) {
-	ffmpeg_args := []string{"-hide_banner", "-i", filename}
-	ffmpeg_options := ctx.String("ffmpeg-options")
-	if ffmpeg_options != "" {
-		ffmpeg_options := strings.Split(ffmpeg_options, " ")
-		ffmpeg_args = append(ffmpeg_args, ffmpeg_options...)
-	}
-	ffmpeg_args = append(ffmpeg_args, "-f", "caf", "-")
-	log.Debug("Running ffmpeg", "args", ffmpeg_args)
-
-	fdkaac_args := []string{}
-	fdkaac_options := ctx.String("fdkaac-options")
-	if fdkaac_options != "" {
-		fdkaac_options := strings.Split(fdkaac_options, " ")
-		fdkaac_args = append(fdkaac_args, fdkaac_options...)
-	}
-	fdkaac_args = append(fdkaac_args, "-", "-o", output)
-	log.Debug("Running fdkaac", "args", fdkaac_args)
-
-	pipeline := pipe.New(
-		pipe.WithEventHandler(func(e *pipe.Event) {
-			if exiterr, ok := e.Err.(*exec.ExitError); ok {
-				log.Error(string(exiterr.Stderr))
-			}
-		}),
-	)
-	dec := pipe.Command("ffmpeg", ffmpeg_args...)
-	enc := pipe.Command("fdkaac", fdkaac_args...)
-	pipeline.Add(dec, enc)
-	err := pipeline.Run(context.Background())
+func convert(ctx *cli.Context, transcoder string, input string, output string) {
+	cmd := exec.Command("bash", "-c", transcoder)
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, "input="+input, "output="+output)
+	log.Debug("Running transcoder", "command", transcoder, "input", input, "output", output)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		log.Error("Error", "error", err, "output", string(out))
 		log.Fatal(err)
 	}
 }
