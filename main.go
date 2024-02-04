@@ -28,7 +28,7 @@ func cleanupTmpdir(tmpdir string, msg string) {
 	}
 }
 
-var safechars = regexp.MustCompile(`[^a-zA-Z0-9\(\)\-!'" ]+`)
+var safechars = regexp.MustCompile(`[^a-zA-Z0-9\(\)\-!'". ]+`)
 
 func filesafe(s string) string {
 	// replace non-alphanumeric characters with underscores
@@ -194,6 +194,12 @@ func process_zip(ctx *cli.Context, filename string) {
 func run(ctx *cli.Context, files []string, outputdir string) {
 	metadata := get_metadata(files[0])
 	log.Info("ℹ️ Metadata", "artist", metadata.Format.Tags.AlbumArtist, "album", metadata.Format.Tags.Album)
+	for _, stream := range metadata.Streams {
+		if stream.CodecType == "audio" {
+			log.Info("🎶 Input", "codec", stream.CodecName, "sample format", stream.SampleFmt, "sample rate", stream.SampleRate)
+			break
+		}
+	}
 	log.Info("📀 Transcoding", "count", len(files))
 	batch_convert(ctx, files, outputdir)
 
@@ -293,10 +299,18 @@ func batch_convert(ctx *cli.Context, files []string, tmpdir string) []string {
 
 // metadata struct
 type Metadata struct {
+	Streams []struct {
+		CodecName  string `json:"codec_name"`
+		CodecType  string `json:"codec_type"`
+		SampleFmt  string `json:"sample_fmt"`
+		SampleRate string `json:"sample_rate"`
+	}
+
 	Format struct {
 		Filename  string `json:"filename"`
 		NbStreams int    `json:"nb_streams"`
-		Tags      struct {
+
+		Tags struct {
 			Album       string `json:"album"`
 			AlbumArtist string `json:"album_artist"`
 			Artist      string `json:"artist"`
@@ -307,7 +321,7 @@ type Metadata struct {
 }
 
 func get_metadata(filename string) Metadata {
-	ffprobe_args := []string{"-hide_banner", "-i", filename, "-show_format", "-print_format", "json"}
+	ffprobe_args := []string{"-hide_banner", "-i", filename, "-show_format", "-show_streams", "-print_format", "json"}
 	ffprobe := exec.Command("ffprobe", ffprobe_args...)
 	ffprobe_out, err := ffprobe.Output()
 	if err != nil {
