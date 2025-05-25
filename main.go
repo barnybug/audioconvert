@@ -28,7 +28,7 @@ func cleanupTmpdir(tmpdir string, msg string) {
 	}
 }
 
-var safechars = regexp.MustCompile(`[^a-zA-Z0-9\(\)\-!'". ]+`)
+var safechars = regexp.MustCompile(`[^-a-zA-Z0-9()!'"., ]+`)
 
 func filesafe(s string) string {
 	// replace non-alphanumeric characters with underscores
