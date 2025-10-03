@@ -273,6 +273,9 @@ func batch_convert(ctx *cli.Context, files []string, tmpdir string) []string {
 				if len(track) == 1 {
 					track = "0" + track
 				}
+				if strings.Contains(track, "/") {
+					track = strings.Split(track, "/")[0]
+				}
 				output := fmt.Sprintf("%s/%s - %s.%s", tmpdir, track, filesafe(metadata.Format.Tags.Title), extension)
 				convert(ctx, transcoder, filename, output)
 				outputs = append(outputs, output)
