@@ -149,7 +149,7 @@ func process_zip(ctx *cli.Context, filename string) {
 
 	// unzip all files into the temporary directory
 	log.Info("🤐 Unzipping", "name", path.Base(filename))
-	unzip_args := []string{"-d", tmpdir, filename}
+	unzip_args := []string{"-d", tmpdir, "-j", filename}
 	unzip := exec.Command("unzip", unzip_args...)
 	unzip_out, err := unzip.CombinedOutput()
 	if err != nil {
